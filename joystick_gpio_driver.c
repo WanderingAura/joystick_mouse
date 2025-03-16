@@ -14,10 +14,10 @@
 
 #define JOYSTICK_BUTTON_PIN 17
 
-static struct input_dev* joystick_dev;
 struct joystick_dev {
     struct i2c_client* client;
     struct input_dev* input;
+    struct delayed_work poll_work;
     int irq;
 };
 
@@ -38,10 +38,27 @@ static irqreturn_t joystick_button_irq(int irq, void* device)
     return IRQ_HANDLED;
 }
 
+static void joystick_poll(struct work_struct* work)
+{
+    struct joystick_dev *joy_dev = container_of(work, struct joystick_dev, poll_work.work);
+    struct i2c_client* client = joy_dev->client;
+
+    int x = joystick_read(client, JOYSTICK_X_REG);
+    int y = joystick_read(client, JOYSTICK_Y_REG);
+    printk(KERN_DEBUG "Joystick poll coords, x: %d, y: %d\n", x, y);
+
+    input_report_abs(joy_dev->input, ABS_X, x);
+    input_report_abs(joy_dev->input, ABS_Y, y);
+    input_sync(joy_dev->input);
+    schedule_delayed_work(&joy_dev->poll_work, msecs_to_jiffies(50));
+    return;
+}
+
 static int joystick_probe(struct i2c_client* client, const struct i2c_device_id *id)
 {
     int error;
     struct joystick_dev *joystick_dev = devm_kzalloc(&client->dev, sizeof(struct joystick_dev), GFP_KERNEL);
+    printk(KERN_INFO "Joystick probe started\n");
     if (!joystick_dev) return -ENOMEM;
 
     joystick_dev->client = client;
@@ -49,7 +66,7 @@ static int joystick_probe(struct i2c_client* client, const struct i2c_device_id 
     joystick_dev->input = devm_input_allocate_device(&client->dev);
     if (!joystick_dev->input) return -ENOMEM;
 
-    joystick_dev->input->name = "Joystick Mouse";
+    joystick_dev->input->name = "joystick_mouse";
     joystick_dev->input->id.bustype = BUS_I2C;
 
     input_set_capability(joystick_dev->input, EV_ABS, ABS_X);
@@ -60,35 +77,43 @@ static int joystick_probe(struct i2c_client* client, const struct i2c_device_id 
     input_set_abs_params(joystick_dev->input, ABS_Y, -128, 127, 2, 4);
 
     error = input_register_device(joystick_dev->input);
-    if (error) return error;
+    if (error) {
+        printk(KERN_ERR "Joystick failed to register input device. Code: %d\n", error);
+        return error;
+    }
 
-    error = gpio_request_one(JOYSTICK_BUTTON_PIN, GPIOF_IN, "joystick button");
-    if (error) return error;
+    // FIX: currently the gpio_request_one function fails with error 517,
+    // error = gpio_request_one(JOYSTICK_BUTTON_PIN, GPIOF_IN, "joystick button");
+    // if (error) {
+    //     printk(KERN_ERR "Joystick failed to request GPIO. Code: %d\n", error);
+    //     return error;
+    // }
 
-    joystick_dev->irq = gpio_to_irq(JOYSTICK_BUTTON_PIN);
-    // NOTE: should it be TRIGGER_RISING or TRIGGER_FALLING?
-    error = request_irq(joystick_dev->irq, joystick_button_irq, IRQF_TRIGGER_RISING, "joystick_irq", joystick_dev);
-    if (error) return error;
+    // joystick_dev->irq = gpio_to_irq(JOYSTICK_BUTTON_PIN);
+    // // NOTE: should it be TRIGGER_RISING or TRIGGER_FALLING?
+    // error = request_irq(joystick_dev->irq, joystick_button_irq, IRQF_TRIGGER_RISING, "joystick_irq", joystick_dev);
+    // if (error) {
+    //     printk(KERN_ERR "Joystick failed initialise irq\n");
+    //     return error;
+    // }
+
+    INIT_DELAYED_WORK(&joystick_dev->poll_work, joystick_poll);
+    schedule_delayed_work(&joystick_dev->poll_work, msecs_to_jiffies(50));
 
     i2c_set_clientdata(client, joystick_dev);
+    printk(KERN_INFO "Joystick GPIO module probing succeeded!\n");
     return 0;
 }
 
 static void joystick_remove(struct i2c_client* client)
 {
-    struct joystick_dev* joystick_dev = i2c_get_clientdata(client);
-    free_irq(joystick_dev->irq, joystick_dev);
+    struct joystick_dev* joy_dev = i2c_get_clientdata(client);
+    free_irq(joy_dev->irq, joy_dev);
     gpio_free(JOYSTICK_BUTTON_PIN);
 }
 
-// TODO: write polling function
-static void joystick_poll(struct work_struct* work)
-{
-    return;
-}
-
 static const struct i2c_device_id joystick_id[] = {
-    {"joystick_id", 0},
+    {"joystick_mouse", 0},
     {} // marks the end of an array
 };
 MODULE_DEVICE_TABLE(i2c, joystick_id);
