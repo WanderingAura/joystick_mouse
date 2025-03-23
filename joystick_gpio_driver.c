@@ -12,7 +12,7 @@
 #define JOYSTICK_X_REG 0
 #define JOYSTICK_Y_REG 1
 
-#define JOYSTICK_BUTTON_PIN 17
+#define JOYSTICK_BUTTON_PIN 40
 
 struct joystick_dev {
     struct i2c_client* client;
@@ -43,12 +43,17 @@ static void joystick_poll(struct work_struct* work)
     struct joystick_dev *joy_dev = container_of(work, struct joystick_dev, poll_work.work);
     struct i2c_client* client = joy_dev->client;
 
+    static const int mouseSpeed = 4;
+    static const int thres = 50;
+
     int x = joystick_read(client, JOYSTICK_X_REG);
     int y = joystick_read(client, JOYSTICK_Y_REG);
     printk(KERN_DEBUG "Joystick poll coords, x: %d, y: %d\n", x, y);
 
-    input_report_abs(joy_dev->input, ABS_X, x);
-    input_report_abs(joy_dev->input, ABS_Y, y);
+    if (abs(x) > thres)
+        input_report_rel(joy_dev->input, REL_X, (x > 0) ? mouseSpeed : -mouseSpeed);
+    if (abs(y) > thres)
+        input_report_rel(joy_dev->input, REL_Y, (x > 0) ? mouseSpeed : -mouseSpeed);
     input_sync(joy_dev->input);
     schedule_delayed_work(&joy_dev->poll_work, msecs_to_jiffies(50));
     return;
@@ -69,12 +74,9 @@ static int joystick_probe(struct i2c_client* client, const struct i2c_device_id 
     joystick_dev->input->name = "joystick_mouse";
     joystick_dev->input->id.bustype = BUS_I2C;
 
-    input_set_capability(joystick_dev->input, EV_ABS, ABS_X);
-    input_set_capability(joystick_dev->input, EV_ABS, ABS_Y);
-    input_set_capability(joystick_dev->input, EV_KEY, BTN_JOYSTICK);
-
-    input_set_abs_params(joystick_dev->input, ABS_X, -128, 127, 2, 4);
-    input_set_abs_params(joystick_dev->input, ABS_Y, -128, 127, 2, 4);
+    input_set_capability(joystick_dev->input, EV_REL, REL_X);
+    input_set_capability(joystick_dev->input, EV_REL, REL_Y);
+    input_set_capability(joystick_dev->input, EV_KEY, BTN_LEFT);
 
     error = input_register_device(joystick_dev->input);
     if (error) {
@@ -82,8 +84,9 @@ static int joystick_probe(struct i2c_client* client, const struct i2c_device_id 
         return error;
     }
 
-    // FIX: currently the gpio_request_one function fails with error 517,
-    // error = gpio_request_one(JOYSTICK_BUTTON_PIN, GPIOF_IN, "joystick button");
+    // FIX: error 517: it seems that the program can't detect the gpio pin
+    // gpio_free(JOYSTICK_BUTTON_PIN);
+    // error = gpio_request_one(JOYSTICK_BUTTON_PIN, GPIOF_IN, "joystick_button");
     // if (error) {
     //     printk(KERN_ERR "Joystick failed to request GPIO. Code: %d\n", error);
     //     return error;
